@@ -104,47 +104,117 @@ namespace ContosoUniversity.Controllers
                 return NotFound();
             }
 
-            var instructor = await _context.Instructor.FindAsync(id);
+            var instructor = await _context.Instructor
+                .Include(i => i.OfficeAssignment)
+                .Include(i => i.CourseAssignments)
+                    .ThenInclude(i => i.Course)
+                .AsNoTracking()
+                .FirstOrDefaultAsync(i => i.ID == id);
+
             if (instructor == null)
             {
                 return NotFound();
             }
+            PopulateAssignedCourseData(instructor);
             return View(instructor);
         }
+
+        private void PopulateAssignedCourseData(Instructor instructor)
+        {
+            var allCourses = _context.Course;
+            var instructorCourses = new HashSet<int>(instructor.CourseAssignments.Select(c => c.CourseID));
+            var viewModel = new List<AssingedCourseData>();
+
+            foreach (var course in allCourses)
+            {
+                viewModel.Add(new AssingedCourseData
+                {
+                    CourseID = course.ID,
+                    Title = course.Title,
+                    Asigned = instructorCourses.Contains(course.ID)
+                });
+            }
+            ViewData["Courses"] = viewModel;
+        }
+
 
         // POST: Instructors/Edit/5
         // To protect from overposting attacks, please enable the specific properties you want to bind to, for 
         // more details see http://go.microsoft.com/fwlink/?LinkId=317598.
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Edit(int id, [Bind("ID,LastName,FirstName,HireDate")] Instructor instructor)
+        public async Task<IActionResult> Edit(int? id, string[] selectedCourses)
         {
-            if (id != instructor.ID)
+            if (id == null)
             {
                 return NotFound();
             }
 
-            if (ModelState.IsValid)
+            var instructorToUpdate = await _context.Instructor
+                .Include(i => i.OfficeAssignment)
+                .Include(i => i.CourseAssignments)
+                    .ThenInclude(i => i.Course)
+                .FirstOrDefaultAsync(i => i.ID == id);
+
+            if (await TryUpdateModelAsync<Instructor>(
+                instructorToUpdate,
+                "",
+                i => i.FirstName, i => i.LastName, i => i.HireDate, i => i.OfficeAssignment))
             {
+                if (String.IsNullOrWhiteSpace(instructorToUpdate.OfficeAssignment?.Location))
+                {
+                    instructorToUpdate.OfficeAssignment = null;
+                }
+
+                UpdateInstructorCourses(selectedCourses, instructorToUpdate);
+
                 try
                 {
-                    _context.Update(instructor);
                     await _context.SaveChangesAsync();
                 }
-                catch (DbUpdateConcurrencyException)
+                catch (DbUpdateException ex)
                 {
-                    if (!InstructorExists(instructor.ID))
-                    {
-                        return NotFound();
-                    }
-                    else
-                    {
-                        throw;
-                    }
+                    //Log the error (uncomment ex variable name and write a log.)
+                    ModelState.AddModelError("", "Unable to save changes. " +
+                        "Try again, and if the problem persists, " +
+                        "see your system administrator.");
                 }
                 return RedirectToAction(nameof(Index));
             }
-            return View(instructor);
+            UpdateInstructorCourses(selectedCourses, instructorToUpdate);
+            PopulateAssignedCourseData(instructorToUpdate);
+            return View(instructorToUpdate);
+        }
+
+        private void UpdateInstructorCourses(string[] selectedCourses, Instructor instructorToUpdate)
+        {
+            if (selectedCourses == null)
+            {
+                instructorToUpdate.CourseAssignments = new List<CourseAssignment>();
+                return;
+            }
+
+            var selectedCoursesHS = new HashSet<string>(selectedCourses);
+            var instructorCourses = new HashSet<int>
+                (instructorToUpdate.CourseAssignments.Select(c => c.Course.ID));
+
+            foreach (var course in _context.Course)
+            {
+                if (selectedCoursesHS.Contains(course.ID.ToString()))
+                {
+                    if (!instructorCourses.Contains(course.ID))
+                        instructorToUpdate.CourseAssignments.Add(new CourseAssignment { InstructorID = instructorToUpdate.ID, CourseID = course.ID });
+                }
+                else
+                {
+                    if (instructorCourses.Contains(course.ID))
+                    {
+                        CourseAssignment courseToRemove = instructorToUpdate.CourseAssignments.FirstOrDefault(i => i.CourseID == course.ID);
+                        //instructorToUpdate.CourseAssignments.Remove(courseToRemove);
+                        _context.CourseAssignment.Remove(courseToRemove);
+                    }
+                }
+            }
         }
 
         // GET: Instructors/Delete/5
